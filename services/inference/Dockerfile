@@ -7,7 +7,7 @@
 # A container on macOS cannot use the Apple GPU. On a MacBook the service is several
 # times faster when run natively with MPS (see README.md); this image is for Linux
 # hosts and for running the whole stack with one command.
-FROM python:3.13-slim-trixie
+FROM python:3.15-slim-trixie
 
 # Since PyTorch 2.11 the default Linux wheels (x86-64 and arm64) bundle the NVIDIA CUDA
 # libraries, several gigabytes that a CPU container never uses. The CPU wheel index
