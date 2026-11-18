@@ -1,0 +1,380 @@
+# NarSat: the whole platform on one machine.
+#
+#   cp .env.example .env        # then fill in the values marked "required"
+#   docker compose up -d --build                          # core platform
+#   docker compose --profile orchestration up -d --build  # + Airflow (batch pipelines)
+#   docker compose --profile ml up -d --build              # + foundation-model inference
+#   docker compose --profile observability up -d           # + Prometheus and Grafana
+#
+# Profiles keep the default footprint small enough for a 16 GB laptop. Rough memory
+# guide (estimates, except the inference figure, which was measured): core platform
+# 3 GB, Airflow 2 GB more, inference service 3.6 GB at its peak (loading the model).
+# Give Docker Desktop at least 8 GB, or 12 GB with the ml profile.
+#
+# Every published port is bound to 127.0.0.1: nothing is reachable from the network.
+#
+#   http://localhost:8080  web application            http://localhost:8081  Airflow
+#   http://localhost:8000  REST API (/docs)           http://localhost:3000  Grafana
+#   http://localhost:9090  Prometheus
+
+name: narsat
+
+x-narsat-env: &narsat-env
+  NARSAT_ENV: ${NARSAT_ENV:-dev}
+  NARSAT_LOG_LEVEL: ${NARSAT_LOG_LEVEL:-INFO}
+  NARSAT_LOG_JSON: "true"
+  NARSAT_DB_DSN: postgresql://narsat:${NARSAT_DB_PASSWORD:?set NARSAT_DB_PASSWORD in .env}@postgis:5432/narsat
+  # The Apache Iceberg catalog lives in its own database; tables and files in SeaweedFS.
+  NARSAT_LAKE_CATALOG_URI: postgresql+psycopg://narsat:${NARSAT_DB_PASSWORD}@postgis:5432/narsat_catalog
+  NARSAT_LAKE_WAREHOUSE_URI: s3://narsat/warehouse
+  NARSAT_LAKE_ASSETS_URI: s3://narsat/assets
+  NARSAT_LAKE_S3_ENDPOINT: http://seaweedfs:8333
+  NARSAT_LAKE_S3_ACCESS_KEY: ${NARSAT_S3_ACCESS_KEY:?set NARSAT_S3_ACCESS_KEY in .env}
+  NARSAT_LAKE_S3_SECRET_KEY: ${NARSAT_S3_SECRET_KEY:?set NARSAT_S3_SECRET_KEY in .env}
+  NARSAT_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  NARSAT_FIRMS_MAP_KEY: ${NARSAT_FIRMS_MAP_KEY:-}
+  NARSAT_FIRMS_SOURCES: ${NARSAT_FIRMS_SOURCES:-VIIRS_SNPP_NRT,VIIRS_NOAA20_NRT,VIIRS_NOAA21_NRT,MODIS_NRT}
+  NARSAT_FIRMS_STATE_PATH: /app/var/poller_state.json
+  NARSAT_AOI_COUNTRIES: ${NARSAT_AOI_COUNTRIES:-DZA,MAR,TUN}
+  NARSAT_SEG_METHODS: ${NARSAT_SEG_METHODS:-dnbr}
+  NARSAT_SEG_INFERENCE_URL: ${NARSAT_SEG_INFERENCE_URL:-http://inference:8080}
+  NARSAT_API_JWT_SECRET: ${NARSAT_API_JWT_SECRET:?set NARSAT_API_JWT_SECRET in .env}
+  NARSAT_API_TITILER_PUBLIC_URL: /titiler
+  NARSAT_API_CORS_ORIGINS: http://localhost:8080,http://localhost:5173
+
+x-narsat-image: &narsat-image
+  image: narsat:${NARSAT_VERSION:-dev}
+  build:
+    context: .
+    dockerfile: Dockerfile
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ============================================================== storage and transport
+  postgis:
+    build: infra/postgis
+    image: narsat-postgis:18
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      NARSAT_DB_PASSWORD: ${NARSAT_DB_PASSWORD}
+      AIRFLOW_DB_PASSWORD: ${AIRFLOW_DB_PASSWORD:?set AIRFLOW_DB_PASSWORD in .env}
+    volumes:
+      # PostgreSQL 18 images keep their data under /var/lib/postgresql/<version>.
+      - pgdata:/var/lib/postgresql
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d narsat"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+    logging: *logging
+
+  # The data volume must belong to the user the Kafka image runs as.
+  kafka-volume-init:
+    image: apache/kafka:4.4.0
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c", "chown -R \"$$(id -u appuser):$$(id -g appuser)\" /var/lib/kafka/data"]
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    restart: "no"
+
+  kafka:
+    image: apache/kafka:4.4.0
+    depends_on:
+      kafka-volume-init:
+        condition: service_completed_successfully
+    environment:
+      # Single node in KRaft mode: one process is both controller and broker.
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Topics are created explicitly (`narsat stream init-topics`), with their settings.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+      CLUSTER_ID: x23YBO_OQX-P2Y55I-ZmIQ
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    ports:
+      - "127.0.0.1:9094:9094"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+    logging: *logging
+
+  # S3-compatible object storage for the lakehouse (Apache-2.0). The admin credentials
+  # come from the environment; anonymous access is refused.
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.53
+    command: >-
+      server -dir=/data -ip=seaweedfs -ip.bind=0.0.0.0
+      -s3 -s3.port=8333 -volume.max=50 -master.volumeSizeLimitMB=1024
+    environment:
+      AWS_ACCESS_KEY_ID: ${NARSAT_S3_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${NARSAT_S3_SECRET_KEY}
+    volumes:
+      - seaweed-data:/data
+    ports:
+      - "127.0.0.1:8333:8333"
+    healthcheck:
+      # Without credentials the S3 endpoint answers 403: that is enough to know it is up.
+      test: ["CMD-SHELL", "wget -q -S -O /dev/null http://127.0.0.1:8333/ 2>&1 | grep -q 'HTTP/'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    logging: *logging
+
+  # ============================================================== platform
+  # One-shot: database schema, Kafka topics, lakehouse tables. Safe to run again.
+  init:
+    <<: *narsat-image
+    environment: *narsat-env
+    command:
+      - sh
+      - -c
+      - >-
+        narsat db wait --timeout 120 &&
+        narsat db upgrade &&
+        narsat stream init-topics &&
+        narsat lake init
+    depends_on:
+      postgis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      seaweedfs:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    restart: "no"
+    logging: *logging
+
+  poller:
+    <<: *narsat-image
+    environment:
+      <<: *narsat-env
+      NARSAT_METRICS_PORT: 9101
+    command: ["narsat", "firms", "poll"]
+    volumes:
+      # Remembers which detections were already published, across restarts.
+      - poller-state:/app/var
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    logging: *logging
+
+  consumer:
+    <<: *narsat-image
+    environment:
+      <<: *narsat-env
+      NARSAT_METRICS_PORT: 9102
+    command: ["narsat", "stream", "consume"]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    logging: *logging
+
+  api:
+    <<: *narsat-image
+    environment: *narsat-env
+    command: ["narsat", "serve-api", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
+    logging: *logging
+
+  titiler:
+    build: infra/titiler
+    image: narsat-titiler:2.4.1
+    environment:
+      # GDAL reads the lake's COGs from SeaweedFS.
+      AWS_ACCESS_KEY_ID: ${NARSAT_S3_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${NARSAT_S3_SECRET_KEY}
+      AWS_S3_ENDPOINT: seaweedfs:8333
+      AWS_HTTPS: "NO"
+      AWS_VIRTUAL_HOSTING: "FALSE"
+      AWS_REGION: us-east-1
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    ports:
+      # For `npm run dev` only; the web application reaches TiTiler through nginx.
+      - "127.0.0.1:8083:8000"
+    restart: unless-stopped
+    logging: *logging
+
+  web:
+    build: web
+    image: narsat-web:${NARSAT_VERSION:-dev}
+    depends_on:
+      - api
+      - titiler
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
+    logging: *logging
+
+  # ============================================================== orchestration (Airflow)
+  airflow-init:
+    profiles: [orchestration]
+    <<: &airflow
+      build:
+        context: .
+        dockerfile: infra/airflow/Dockerfile
+      image: narsat-airflow:${NARSAT_VERSION:-dev}
+      environment:
+        <<: *narsat-env
+        AIRFLOW__CORE__EXECUTOR: LocalExecutor
+        AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+        AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "False"
+        AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD}@postgis:5432/airflow
+        # Tasks report to the API server through the execution API (Airflow 3).
+        AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
+        AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?set AIRFLOW_JWT_SECRET in .env}
+        AIRFLOW__API__SECRET_KEY: ${AIRFLOW_JWT_SECRET}
+        AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: admin:admin
+        AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/passwords.json
+        AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?set AIRFLOW_ADMIN_PASSWORD in .env}
+      volumes:
+        - airflow-logs:/opt/airflow/logs
+      logging: *logging
+    command: ["db", "migrate"]
+    depends_on:
+      postgis:
+        condition: service_healthy
+      init:
+        condition: service_completed_successfully
+    restart: "no"
+
+  airflow-api-server:
+    profiles: [orchestration]
+    <<: *airflow
+    command: ["api-server", "--port", "8080"]
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8081:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/v2/monitor/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  # Runs the tasks too (LocalExecutor): this is the container that calls `narsat` and `dbt`.
+  airflow-scheduler:
+    profiles: [orchestration]
+    <<: *airflow
+    command: ["scheduler"]
+    depends_on:
+      airflow-api-server:
+        condition: service_healthy
+    restart: unless-stopped
+
+  airflow-dag-processor:
+    profiles: [orchestration]
+    <<: *airflow
+    command: ["dag-processor"]
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ============================================================== machine learning
+  # CPU only: containers on macOS cannot use the Apple GPU. See services/inference/README.md
+  # to run the service natively with MPS instead.
+  inference:
+    profiles: [ml]
+    build: services/inference
+    image: narsat-inference:${NARSAT_VERSION:-dev}
+    environment:
+      NARSAT_INFERENCE_DEVICE: cpu
+      NARSAT_INFERENCE_MODEL_REVISION: ${NARSAT_INFERENCE_MODEL_REVISION:-main}
+    volumes:
+      - inference-models:/models
+    ports:
+      - "127.0.0.1:8090:8080"
+    restart: unless-stopped
+    logging: *logging
+
+  # ============================================================== observability
+  prometheus:
+    profiles: [observability]
+    image: prom/prometheus:v3.13.3
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    restart: unless-stopped
+    logging: *logging
+
+  grafana:
+    profiles: [observability]
+    image: grafana/grafana:13.1.1
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/narsat-overview.json
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    ports:
+      - "127.0.0.1:3000:3000"
+    restart: unless-stopped
+    logging: *logging
+
+volumes:
+  pgdata:
+  kafka-data:
+  seaweed-data:
+  poller-state:
+  airflow-logs:
+  inference-models:
+  prometheus-data:
+  grafana-data:

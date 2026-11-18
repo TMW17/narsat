@@ -1,0 +1,32 @@
+# TEST FIXTURE - not the file used in production.
+#
+# The model section and the normalisation statistics of `burn_scars_config.yaml`
+# as published with ibm-nasa-geospatial/Prithvi-EO-2.0-300M-BurnScars
+# (https://huggingface.co/ibm-nasa-geospatial/Prithvi-EO-2.0-300M-BurnScars,
+# read on 2026-11-10), reduced to what is needed to build the network.
+#
+# It lets the test-suite build the real 324 M-parameter architecture and exercise
+# checkpoint loading and tiled inference with random weights, without network access.
+# In production the service downloads the original YAML next to the checkpoint.
+model:
+  class_path: terratorch.tasks.SemanticSegmentationTask
+  init_args:
+    model_factory: EncoderDecoderFactory
+    model_args:
+      backbone: prithvi_eo_v2_300
+      backbone_pretrained: true
+      backbone_img_size: 512
+      backbone_bands: [BLUE, GREEN, RED, NIR_NARROW, SWIR_1, SWIR_2]
+      necks:
+        - name: SelectIndices
+          indices: [5, 11, 17, 23]
+        - name: ReshapeTokensToImage
+        - name: LearnedInterpolateToPyramidal
+      decoder: UNetDecoder
+      decoder_channels: [512, 256, 128, 64]
+      head_dropout: 0.1
+      num_classes: 2
+data:
+  init_args:
+    means: [0.0333497, 0.0570119, 0.0588975, 0.2323245, 0.1972855, 0.1194491]
+    stds: [0.0226914, 0.0268076, 0.0400411, 0.0779173, 0.0870874, 0.0724198]

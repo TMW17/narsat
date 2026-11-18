@@ -1,0 +1,32 @@
+# dbt project: analytics marts over the NarSat lakehouse.
+#
+#   dbt build --project-dir transform --profiles-dir transform      (or: make marts)
+#
+# Sources are the silver/gold Iceberg tables; the marts are written as Parquet files
+# that `narsat lake publish-marts` loads into PostgreSQL for the API.
+name: narsat
+version: "1.0.0"
+config-version: 2
+profile: narsat
+require-dbt-version: [">=1.12.0", "<2.0.0"]
+
+model-paths: ["models"]
+test-paths: ["tests"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages", "logs"]
+
+flags:
+  send_anonymous_usage_stats: false
+
+vars:
+  # Detections and events outside every loaded administrative boundary.
+  unknown_country: UNK
+  unknown_admin: Unknown
+
+models:
+  narsat:
+    staging:
+      +materialized: view
+    marts:
+      +materialized: external
+      +format: parquet

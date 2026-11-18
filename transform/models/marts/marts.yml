@@ -1,0 +1,67 @@
+version: 2
+
+# Contract with the API: column names and types match the tables of the `mart` schema
+# in PostgreSQL (see src/narsat/db/migrations). `narsat lake publish-marts` refuses a
+# file that lacks a column.
+models:
+  - name: fire_activity_daily
+    description: Fire detections, events and radiative power per UTC day and first-level unit.
+    columns:
+      - name: activity_date
+        data_tests: [not_null]
+      - name: country_iso3
+        data_tests: [not_null]
+      - name: admin1_name
+        data_tests: [not_null]
+      - name: n_hotspots
+        data_tests:
+          - not_null
+          - at_least:
+              arguments:
+                minimum: 1
+      - name: n_events
+        data_tests: [not_null]
+    data_tests:
+      - unique_combination:
+          arguments:
+            columns: [activity_date, country_iso3, admin1_name]
+
+  - name: burned_area_admin_year
+    description: Burned area per fire year, first-level unit and mapping method.
+    columns:
+      - name: fire_year
+        data_tests: [not_null]
+      - name: method
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [dnbr, model]
+      - name: n_events
+        data_tests: [not_null]
+      - name: area_ha
+        data_tests:
+          - not_null
+          - at_least:
+              arguments:
+                minimum: 0
+    data_tests:
+      - unique_combination:
+          arguments:
+            columns: [fire_year, country_iso3, admin1_name, method]
+
+  - name: event_summary
+    description: One row per current fire event, with mapped area per method.
+    columns:
+      - name: event_id
+        data_tests: [not_null, unique]
+      - name: duration_hours
+        data_tests:
+          - not_null
+          - at_least:
+              arguments:
+                minimum: 0
+      - name: n_hotspots
+        data_tests: [not_null]
+      - name: method_iou
+        data_tests:
+          - between_zero_and_one

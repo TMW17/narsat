@@ -1,0 +1,171 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "narsat"
+version = "0.1.0"
+description = "NarSat - streaming + batch Earth-observation lakehouse for wildfire and burned-area mapping in the Maghreb"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.12,<3.14"
+authors = [{ name = "Mohamed Walid Tadj" }]
+keywords = ["wildfire", "burned-area", "earth-observation", "kafka", "iceberg", "stac", "sentinel-2", "postgis"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: GIS",
+]
+
+# Core runtime: configuration, FIRMS ingestion, Kafka streaming, event clustering,
+# PostGIS access, the Iceberg lakehouse layer and the data-quality gates.
+dependencies = [
+  "pydantic>=2.14,<3",
+  "pydantic-settings>=2.16,<3",
+  "structlog>=26.1",
+  "typer>=0.29,<1",
+  # httpx2 is the maintained successor of httpx (github.com/pydantic/httpx2).
+  "httpx2>=2.16,<3",
+  "tenacity>=9.2,<10",
+  "prometheus-client>=0.26,<1",
+  "psycopg[binary,pool]>=3.3,<4",
+  "sqlalchemy>=2.1,<3",
+  "alembic>=1.20,<2",
+  "numpy>=2.5,<3",
+  "pandas>=3.1,<4",
+  "pyarrow>=26,<27",
+  "shapely>=2.2,<3",
+  "pyproj>=3.8,<4",
+  "scipy>=1.18,<2",
+  "scikit-learn>=1.9,<2",
+  "pyiceberg[pyarrow]>=0.12,<0.13",
+  "pandera[pandas]>=0.36,<1",
+  "confluent-kafka>=2.16,<3",
+]
+
+[project.optional-dependencies]
+# Sentinel-2 access: STAC search and windowed COG reads/writes.
+imagery = [
+  "rasterio>=1.5,<2",
+  "pystac-client>=0.9,<1",
+]
+# REST API.
+api = [
+  "fastapi>=0.162,<1",
+  "uvicorn[standard]>=0.54,<1",
+  "pyjwt>=2.15,<3",
+  "argon2-cffi>=25.1",
+  "python-multipart>=0.0.33",
+]
+# Reading reference perimeters delivered as Shapefile / GeoPackage (GeoJSON needs nothing).
+vector = [
+  "pyogrio>=0.13,<1",
+]
+# Analytics marts: dbt Core with the DuckDB adapter (see transform/).
+transform = [
+  "dbt-core>=1.12,<1.13",
+  "dbt-duckdb>=1.11,<1.12",
+]
+all = ["narsat[imagery,api,vector,transform]"]
+
+[project.scripts]
+narsat = "narsat.cli:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=9.2,<10",
+  "pytest-cov>=7.1",
+  "anyio>=4.9",
+  "hypothesis>=6.170",
+  "ruff>=0.17,<0.18",
+  "mypy>=2.4,<3",
+  "pandas-stubs>=3.0",
+  "types-shapely>=2.1",
+  "pre-commit>=4.7",
+  # Reads the Prometheus rules and Compose file in tests/unit/test_monitoring_config.py.
+  "pyyaml>=6.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/narsat"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/narsat", "README.md", "LICENSE"]
+
+# --------------------------------------------------------------------------- ruff
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests", "services/inference/src"]
+extend-exclude = ["web", "transform/dbt_narsat/target", "transform/dbt_narsat/dbt_packages"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "C4", "PT", "RUF", "S", "T20", "DTZ"]
+ignore = [
+  "S101",   # assert is fine in tests and for internal invariants
+  "S608",   # SQL is built from constants plus bound parameters; reviewed per call site
+  "RUF012", # pydantic/pandera class attributes
+  "B008",   # FastAPI/Typer dependency defaults
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "T20", "DTZ", "E501"]
+"services/inference/tests/**" = ["S", "T20", "E501"]
+"src/narsat/db/migrations/**" = ["E501"]
+"orchestration/**" = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["narsat", "narsat_inference"]
+
+# --------------------------------------------------------------------------- mypy
+[tool.mypy]
+python_version = "3.13"
+files = ["src/narsat"]
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = [
+  "dbt.*",
+  "confluent_kafka.*",
+  "pyiceberg.*",
+  "pyarrow.*",
+  "rasterio.*",
+  "sklearn.*",
+  "scipy.*",
+  "pystac_client.*",
+  "pystac.*",
+  "pandera.*",
+  "affine.*",
+  "pyogrio.*",
+]
+ignore_missing_imports = true
+follow_imports = "skip"
+
+# --------------------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+  "integration: needs a live service (PostGIS, S3 or a Kafka broker); skipped unless the matching NARSAT_TEST_* variable is set",
+  "network: calls a public internet API (FIRMS, Earth Search); never run in CI",
+]
+filterwarnings = [
+  "error::DeprecationWarning:narsat.*",
+  # PyIceberg warns when an overwrite finds nothing to delete (first write of a table).
+  "ignore:Delete operation did not match any records:UserWarning",
+]
+
+[tool.coverage.run]
+source = ["narsat"]
+branch = true
+omit = ["src/narsat/db/migrations/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
