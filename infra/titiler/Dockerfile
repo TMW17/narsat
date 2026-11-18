@@ -5,7 +5,7 @@
 # Built from the PyPI release instead of the upstream image, so that the version is the
 # one NarSat was tested with (tests/integration/test_titiler_tiles.py) and the image
 # builds natively on arm64 and x86-64 (rasterio wheels bundle GDAL).
-FROM python:3.13-slim-trixie
+FROM python:3.15-slim-trixie
 
 ARG TITILER_VERSION=2.4.1
 ENV PYTHONUNBUFFERED=1 \
