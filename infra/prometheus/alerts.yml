@@ -1,0 +1,129 @@
+# Alert rules of the NarSat stack. Thresholds assume the default settings (FIRMS polled
+# every 10 minutes, lakehouse refreshed nightly); adjust them with those settings.
+groups:
+  - name: narsat-services
+    rules:
+      - alert: NarsatServiceDown
+        expr: up{job=~"narsat-.*"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} is not answering on its metrics endpoint"
+          description: "Prometheus could not scrape {{ $labels.instance }} for 5 minutes."
+
+      - alert: NarsatApiErrors
+        expr: |
+          sum(rate(narsat_api_requests_total{status=~"5.."}[10m]))
+            / clamp_min(sum(rate(narsat_api_requests_total[10m])), 1e-9) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 5 % of API requests fail with a server error"
+
+      - alert: NarsatApiSlow
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(narsat_api_request_seconds_bucket[10m]))) > 2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "95th percentile of API response time above 2 s"
+
+  - name: narsat-ingestion
+    rules:
+      - alert: NarsatFirmsPollingStale
+        expr: time() - narsat_firms_last_success_timestamp_seconds > 3600
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No successful FIRMS poll for {{ $labels.source }} in over an hour"
+          description: >-
+            The poller runs every 10 minutes. Check its log for HTTP errors (invalid or
+            rate-limited MAP_KEY, FIRMS outage).
+
+      - alert: NarsatFirmsRequestsFailing
+        expr: |
+          sum by (source) (increase(narsat_firms_requests_total{outcome="error"}[30m])) >= 3
+        labels:
+          severity: warning
+        annotations:
+          summary: "Repeated FIRMS request failures for {{ $labels.source }}"
+
+      - alert: NarsatKafkaPublishFailures
+        expr: sum(increase(narsat_hotspot_publish_failures_total[30m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Kafka refused hotspot messages; they will be fetched again at the next poll"
+
+      - alert: NarsatConsumerLag
+        expr: sum(narsat_stream_consumer_lag_messages) > 10000
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The stream consumer is more than 10,000 messages behind"
+
+      - alert: NarsatDeadLetters
+        expr: sum(increase(narsat_stream_messages_total{outcome="dead_letter"}[1h])) > 0
+        labels:
+          severity: info
+        annotations:
+          summary: "Messages were sent to the dead-letter topic in the last hour"
+          description: "Inspect them with kafka-console-consumer on firms.hotspots.dlq."
+
+  - name: narsat-pipelines
+    rules:
+      # During the fire season FIRMS reports detections over the Maghreb every day. In
+      # winter a quiet day can be genuine, hence the generous threshold.
+      - alert: NarsatNoNewDetections
+        expr: time() - narsat_data_last_ingestion_timestamp_seconds > 2 * 86400
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: "No new fire detection stored for two days"
+
+      - alert: NarsatQualityGateFailed
+        expr: narsat_dq_failed_checks{severity="error"} > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "A blocking data-quality check failed in the latest lakehouse refresh"
+          description: >-
+            The lakehouse tables kept their previous version. See the Data quality page of
+            the web application or GET /api/v1/quality/checks.
+
+      - alert: NarsatQualityRunsStopped
+        expr: time() - narsat_dq_last_run_timestamp_seconds > 2 * 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "The nightly lakehouse refresh has not run for two days"
+
+      - alert: NarsatMappingBacklog
+        expr: narsat_mapping_queue_events > 50
+        for: 6h
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 50 fire events have been waiting for mapping for 6 hours"
+
+      - alert: NarsatMappingFailures
+        expr: narsat_mapping_failed_events > 0
+        labels:
+          severity: info
+        annotations:
+          summary: "{{ $value }} fire events could not be mapped after every attempt"
+
+      - alert: NarsatPlatformMetricsStale
+        expr: time() - narsat_platform_metrics_refresh_timestamp_seconds > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The API cannot read the platform-health figures from the database"

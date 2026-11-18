@@ -1,0 +1,53 @@
+version: 2
+
+models:
+  - name: stg_hotspots
+    description: Fire detections without static thermal sources, with a UTC activity date.
+    columns:
+      - name: hotspot_id
+        data_tests: [not_null, unique]
+      - name: activity_date
+        data_tests: [not_null]
+      - name: country_iso3
+        data_tests: [not_null]
+      - name: admin1_name
+        data_tests: [not_null]
+
+  - name: stg_fire_events
+    description: Current fire events (events merged into another one are excluded).
+    columns:
+      - name: event_id
+        data_tests: [not_null, unique]
+      - name: status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [active, cooling, closed]
+      - name: mapping_status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [not_ready, pending, imagery_pending, mapped, failed, skipped]
+
+  - name: stg_burned_areas
+    description: Burned-area products not rejected by quality review.
+    columns:
+      - name: ba_id
+        data_tests: [not_null, unique]
+      - name: method
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [dnbr, model]
+      - name: area_ha
+        data_tests: [not_null]
+    data_tests:
+      - unique_combination:
+          arguments:
+            columns: [event_id, method]
+
+  - name: stg_method_agreement
+    description: Model-versus-dNBR agreement, one row per event mapped by both methods.
+    columns:
+      - name: event_id
+        data_tests: [not_null, unique]

@@ -1,0 +1,64 @@
+version: 2
+
+sources:
+  - name: silver
+    description: Cleaned, deduplicated and enriched tables of the lakehouse (Apache Iceberg).
+    schema: silver
+    config:
+      plugin: lakehouse
+    tables:
+      - name: hotspots
+        description: One row per active-fire detection, deduplicated across polls.
+        config:
+          selected_fields:
+            - hotspot_id
+            - acq_ts
+            - frp_mw
+            - confidence_level
+            - is_static_source
+            - country_iso3
+            - admin1_name
+            - event_id
+        columns:
+          - name: hotspot_id
+            data_tests: [not_null, unique]
+      - name: fire_events
+        description: Snapshot of the fire events (clusters of detections).
+        config:
+          selected_fields:
+            - event_id
+            - status
+            - mapping_status
+            - first_seen
+            - last_seen
+            - n_hotspots
+            - frp_max_mw
+            - country_iso3
+            - admin1_name
+            - hull_area_ha
+        columns:
+          - name: event_id
+            data_tests: [not_null, unique]
+          - name: status
+            data_tests:
+              - accepted_values:
+                  arguments:
+                    values: [active, cooling, closed, merged, dissolved]
+
+  - name: gold
+    description: Burned-area products and their agreement metrics (Apache Iceberg).
+    schema: gold
+    config:
+      plugin: lakehouse
+    tables:
+      - name: burned_areas
+        description: One burned-area product per event and method.
+        config:
+          selected_fields: [ba_id, event_id, method, model_version, post_datetime, area_ha, qa_status]
+        columns:
+          - name: ba_id
+            data_tests: [not_null, unique]
+      - name: burned_area_validation
+        description: Agreement of a product with a reference (external perimeters or the other method).
+        config:
+          selected_fields: [ba_id, event_id, method, ref_source, iou, precision_ref, recall_ref]

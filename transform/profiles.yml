@@ -1,0 +1,17 @@
+# DuckDB runs in memory: every `dbt build` starts from the current state of the lake
+# and leaves nothing behind except the Parquet marts. Set NARSAT_DBT_DUCKDB_PATH to a
+# file to keep the intermediate models for inspection.
+narsat:
+  target: local
+  outputs:
+    local:
+      type: duckdb
+      path: "{{ env_var('NARSAT_DBT_DUCKDB_PATH', ':memory:') }}"
+      threads: 1
+      external_root: "{{ env_var('NARSAT_MARTS_DIR', 'var/marts') }}"
+      settings:
+        # Calendar days and years are computed in UTC, whatever the host time zone.
+        TimeZone: UTC
+      plugins:
+        - module: narsat.transform.iceberg_source
+          alias: lakehouse

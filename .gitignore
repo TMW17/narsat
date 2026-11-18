@@ -1,0 +1,50 @@
+# Secrets and local configuration: never committed.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+**/passwords.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+.coverage
+coverage.xml
+htmlcov/
+
+# Data produced at run time (lakehouse, rasters, poller state, marts)
+var/
+*.tif
+*.parquet
+
+# dbt
+transform/target/
+transform/logs/
+transform/dbt_packages/
+
+# Airflow (local runs)
+airflow.db
+logs/
+
+# Web
+node_modules/
+*.tsbuildinfo
+
+# Leftovers of applying patches
+*.orig
+*.rej
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
