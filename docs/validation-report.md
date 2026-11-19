@@ -142,6 +142,7 @@ should be checked first on a machine with Docker and internet access.
 | Lakehouse refresh behind the quality gates | No blocking failure, one warning (explained in results.md, section 6) |
 | Airflow 3: DAGs loaded; lakehouse DAG triggered | Success; `dbt build` PASS=50 |
 | Web application with the OpenFreeMap base map | Map, Statistics and Data quality pages checked by screenshot |
+| CI workflow on GitHub, first push (run 44387229170, 18 November 2026) | All 11 jobs passed in about 8 minutes: ruff, mypy and the Python tests against PostGIS and SeaweedFS; inference contract tests; Airflow DAG integrity; web checks and build; Compose, ShellCheck and actionlint; the six images built and smoke-tested on the amd64 runners |
 
 ### Defects found by the run, and fixed
 
@@ -178,6 +179,5 @@ Each fix came with tests. In the development environment, the suite grew from 23
 | The `observability` profile (Prometheus v3.13, Grafana) | Rules and dashboard are only checked by tests |
 | EFFIS perimeters | NEALGEBA was used instead; it covers north-east Algeria only |
 | The end-to-end browser test on the Mac | The pages were checked by hand with screenshots |
-| The CI workflow on GitHub | Runs on the first push |
 | Mapping of the live November 2026 events | None was queued for mapping during the run |
 

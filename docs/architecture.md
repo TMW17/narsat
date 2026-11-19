@@ -18,51 +18,9 @@ in [adr/](adr/); what has actually been executed and tested is in
 
 ## 2. Components
 
-```mermaid
-flowchart TB
-    subgraph sources[External sources]
-        FIRMS[NASA FIRMS area API]
-        STAC[Earth Search STAC<br/>Sentinel-2 L2A COGs]
-        HF[Hugging Face<br/>Prithvi weights]
-        REF[EFFIS perimeters<br/>geoBoundaries]
-    end
-    subgraph stream[Streaming]
-        POLL[poller<br/>narsat firms poll]
-        KAFKA[(Kafka<br/>firms.hotspots.raw<br/>firms.hotspots.dlq<br/>narsat.fire-events)]
-        CONS[consumer<br/>narsat stream consume]
-    end
-    subgraph batch[Batch - Airflow]
-        MAPDAG[narsat_map_events<br/>hourly]
-        LAKEDAG[narsat_lakehouse_refresh<br/>nightly]
-        MAINT[narsat_lake_maintenance<br/>weekly]
-    end
-    subgraph storage[Storage]
-        PG[(PostgreSQL + PostGIS<br/>operational store, marts)]
-        CAT[(Iceberg SQL catalog)]
-        S3[(SeaweedFS - S3<br/>Iceberg files, COG rasters)]
-    end
-    subgraph serving[Serving]
-        API[FastAPI]
-        TT[TiTiler]
-        WEB[nginx + React/MapLibre]
-    end
-    INF[inference service<br/>TerraTorch + Prithvi]
+![NarSat components: external sources, streaming, Airflow batch DAGs, storage, serving and the inference service](img/00-architecture-components.png)
 
-    FIRMS --> POLL --> KAFKA --> CONS
-    CONS --> PG
-    CONS --> S3
-    CONS --> CAT
-    MAPDAG --> PG
-    STAC --> MAPDAG
-    MAPDAG --> INF
-    HF --> INF
-    MAPDAG --> S3
-    LAKEDAG --> S3
-    LAKEDAG --> PG
-    REF --> PG
-    PG --> API --> WEB
-    S3 --> TT --> WEB
-```
+<sub>Diagram source: [diagrams/components.mmd](diagrams/components.mmd) (Mermaid).</sub>
 
 | Component | Runs as | Role |
 | --- | --- | --- |

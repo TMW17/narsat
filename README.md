@@ -55,34 +55,9 @@ loaded, and all four maps it named are reported.
 
 ## What it does
 
-```mermaid
-flowchart LR
-    FIRMS[NASA FIRMS<br/>active-fire API] -->|every 10 min| POLL[Poller]
-    POLL -->|hotspot messages| K[(Apache Kafka)]
-    K --> SINK[Stream consumer]
-    SINK -->|exactly-once append| BRONZE[(Iceberg bronze)]
-    SINK --> PG[(PostGIS)]
-    SINK -->|clusters detections| EV[Fire events]
-    EV --> PG
-    STAC[Sentinel-2 L2A<br/>Earth Search STAC] --> MAP[Burned-area mapping]
-    PG -->|closed events| MAP
-    MAP -->|dNBR| PG
-    MAP -->|tiles| INF[Prithvi-EO-2.0<br/>inference service]
-    INF --> MAP
-    MAP -->|COG rasters| S3[(Object store)]
-    REF[Reference perimeters<br/>NEALGEBA, EFFIS] --> EVAL[Agreement and<br/>accuracy]
-    PG --> EVAL
-    S3 --> EVAL
-    BRONZE --> GATES{Quality gates}
-    PG --> GATES
-    GATES --> SILVER[(Iceberg silver / gold)]
-    SILVER --> DBT[dbt + DuckDB marts]
-    DBT --> PG
-    PG --> API[REST API + vector tiles]
-    S3 --> TT[TiTiler raster tiles]
-    API --> WEB[Web map]
-    TT --> WEB
-```
+![NarSat data flow: FIRMS detections stream through Kafka into Iceberg and PostGIS and are grouped into fire events; closed events are mapped from Sentinel-2 with dNBR and the Prithvi-EO-2.0 inference service; results are evaluated against reference perimeters, pass quality gates into Iceberg silver and gold and dbt marts, and are served by the REST API, TiTiler and the web map](docs/img/00-architecture-overview.png)
+
+<sub>Diagram source: [docs/diagrams/overview.mmd](docs/diagrams/overview.mmd) (Mermaid).</sub>
 
 1. **Ingestion (streaming).** A poller queries the FIRMS area API for the VIIRS and MODIS
    near-real-time products and publishes each new detection to Kafka once. A consumer

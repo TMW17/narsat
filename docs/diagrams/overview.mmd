@@ -1,0 +1,26 @@
+flowchart TB
+    FIRMS[NASA FIRMS<br/>active-fire API] -->|every 10 min| POLL[Poller]
+    POLL -->|hotspot messages| K[(Apache Kafka)]
+    K --> SINK[Stream consumer]
+    SINK -->|exactly-once append| BRONZE[(Iceberg bronze)]
+    SINK --> PG[(PostGIS)]
+    SINK -->|clusters detections| EV[Fire events]
+    EV --> PG
+    STAC[Sentinel-2 L2A<br/>Earth Search STAC] --> MAP[Burned-area mapping]
+    PG -->|closed events| MAP
+    MAP -->|dNBR| PG
+    MAP -->|tiles| INF[Prithvi-EO-2.0<br/>inference service]
+    INF --> MAP
+    MAP -->|COG rasters| S3[(Object store)]
+    REF[Reference perimeters<br/>NEALGEBA, EFFIS] --> EVAL[Agreement and<br/>accuracy]
+    PG --> EVAL
+    S3 --> EVAL
+    BRONZE --> GATES{Quality gates}
+    PG --> GATES
+    GATES --> SILVER[(Iceberg silver / gold)]
+    SILVER --> DBT[dbt + DuckDB marts]
+    DBT --> PG
+    PG --> API[REST API + vector tiles]
+    S3 --> TT[TiTiler raster tiles]
+    API --> WEB[Web map]
+    TT --> WEB
